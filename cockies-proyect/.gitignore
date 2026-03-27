@@ -1,0 +1,17 @@
+# Datos sensibles
+data/config.json
+data/encrypted/
+data/cockies.lock
+
+# Virtual environment
+cockies/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# IDE
+.vscode/
+.idea/

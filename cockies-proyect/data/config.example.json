@@ -1,0 +1,17 @@
+{
+    "telegram_token": "TU_TOKEN_AQUI",
+    "telegram_chat_id": "TU_CHAT_ID_AQUI",
+    "encryption_key": "",
+    "report_interval": 300,
+    "daily_report_hour": 22,
+    "idle_threshold": 300,
+    "break_reminder": 3600,
+    "distraction_sites": [
+        "youtube.com",
+        "twitter.com",
+        "facebook.com",
+        "instagram.com",
+        "tiktok.com",
+        "reddit.com"
+    ]
+}
