@@ -120,53 +120,71 @@ class KeyboardTracker:
             print(f"⚠️  Error iniciando monitor de teclado: {e}")
 
     def _start_wsl(self):
-        """Inicia captura de teclado en WSL usando PowerShell."""
-        # Script PS que lee teclas y las imprime como líneas: KEY|char
+        """Inicia captura de teclado en WSL usando un hook real de Windows."""
+        # Usa SetWindowsHookEx (WH_KEYBOARD_LL) — basado en eventos, no polling.
+        # Cada tecla dispara un callback exactamente una vez = sin fantasmas ni pérdidas.
         ps_script = r'''
-Add-Type @'
+Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
-public class KBHook {
-    [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vKey);
-    [DllImport("user32.dll")] public static extern int ToUnicode(uint wVirtKey, uint wScanCode, byte[] lpKeyState, StringBuilder pwszBuff, int cchBuff, uint wFlags);
-    [DllImport("user32.dll")] public static extern bool GetKeyboardState(byte[] lpKeyState);
-    [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint uCode, uint uMapType);
-}
-'@
-$prev = @{}
-while ($true) {
-    for ($vk = 8; $vk -le 254; $vk++) {
-        $state = [KBHook]::GetAsyncKeyState($vk)
-        $pressed = ($state -band 1) -eq 1
-        if ($pressed -and -not $prev[$vk]) {
-            $kbState = New-Object byte[] 256
-            [KBHook]::GetKeyboardState($kbState) | Out-Null
-            $sc = [KBHook]::MapVirtualKey([uint32]$vk, 0)
-            $sb = New-Object System.Text.StringBuilder 4
-            $ret = [KBHook]::ToUnicode([uint32]$vk, $sc, $kbState, $sb, 4, 0)
-            if ($ret -gt 0) {
-                Write-Output "K|$($sb.ToString())"
+using System.Windows.Forms;
+
+public class KeyHook {
+    private delegate IntPtr LLKeyProc(int nCode, IntPtr wParam, IntPtr lParam);
+    private static LLKeyProc _proc = Callback;
+    private static IntPtr _hookID = IntPtr.Zero;
+
+    [DllImport("user32.dll")] static extern IntPtr SetWindowsHookEx(int id, LLKeyProc cb, IntPtr hMod, uint tid);
+    [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr hk, int nCode, IntPtr wp, IntPtr lp);
+    [DllImport("kernel32.dll")] static extern IntPtr GetModuleHandle(string name);
+    [DllImport("user32.dll")] static extern int ToUnicode(uint vk, uint sc, byte[] ks, [Out] StringBuilder sb, int cc, uint fl);
+    [DllImport("user32.dll")] static extern bool GetKeyboardState(byte[] ks);
+    [DllImport("user32.dll")] static extern uint MapVirtualKey(uint code, uint map);
+
+    static IntPtr Callback(int nCode, IntPtr wParam, IntPtr lParam) {
+        if (nCode >= 0 && ((int)wParam == 0x0100 || (int)wParam == 0x0104)) {
+            int vk = Marshal.ReadInt32(lParam);
+            byte[] ks = new byte[256];
+            GetKeyboardState(ks);
+            uint sc = MapVirtualKey((uint)vk, 0);
+            StringBuilder sb = new StringBuilder(4);
+            int r = ToUnicode((uint)vk, sc, ks, sb, 4, 0);
+            if (r < 0) {
+                // Dead key: flush state
+                ToUnicode((uint)vk, sc, ks, sb, 4, 0);
+            } else if (r > 0) {
+                Console.WriteLine("K|" + sb.ToString());
+                Console.Out.Flush();
             } else {
-                switch ($vk) {
-                    8  { Write-Output "S|BACKSPACE" }
-                    9  { Write-Output "S|TAB" }
-                    13 { Write-Output "S|ENTER" }
-                    27 { Write-Output "S|ESC" }
-                    32 { Write-Output "K| " }
-                    37 { Write-Output "S|LEFT" }
-                    38 { Write-Output "S|UP" }
-                    39 { Write-Output "S|RIGHT" }
-                    40 { Write-Output "S|DOWN" }
-                    46 { Write-Output "S|DELETE" }
+                string sp = null;
+                switch (vk) {
+                    case 8: sp = "BACKSPACE"; break;
+                    case 9: sp = "TAB"; break;
+                    case 13: sp = "ENTER"; break;
+                    case 27: sp = "ESC"; break;
+                    case 37: sp = "LEFT"; break;
+                    case 38: sp = "UP"; break;
+                    case 39: sp = "RIGHT"; break;
+                    case 40: sp = "DOWN"; break;
+                    case 46: sp = "DELETE"; break;
+                }
+                if (sp != null) {
+                    Console.WriteLine("S|" + sp);
+                    Console.Out.Flush();
                 }
             }
-            [Console]::Out.Flush()
         }
-        $prev[$vk] = $pressed
+        return CallNextHookEx(_hookID, nCode, wParam, lParam);
     }
-    Start-Sleep -Milliseconds 15
+
+    public static void Run() {
+        _hookID = SetWindowsHookEx(13, _proc, GetModuleHandle("user32"), 0);
+        Application.Run();
+    }
 }
+'@
+[KeyHook]::Run()
 '''
         def _reader():
             try:
@@ -180,7 +198,7 @@ while ($true) {
                 for line in self._ps_process.stdout:
                     if not self._is_running:
                         break
-                    line = line.strip()
+                    line = line.rstrip('\r\n')
                     if not line or "|" not in line:
                         continue
 
